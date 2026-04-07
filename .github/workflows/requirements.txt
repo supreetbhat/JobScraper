@@ -1,0 +1,6 @@
+selenium
+requests
+webdriver-manager
+python-dotenv
+beautifulsoup4
+duckduckgo-search

@@ -2,30 +2,29 @@ name: Daily Job Scrape
 
 on:
   schedule:
-    # This runs at 09:00 UTC, which is 11:00 AM in Germany (CEST)
     - cron: '0 9 * * *'
-  workflow_dispatch: # Allows you to run it manually from GitHub
+  workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.11'
 
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
-
-      - name: Install Chrome for Selenium
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y google-chrome-stable
 
       - name: Run Scraper
         env:
@@ -35,8 +34,8 @@ jobs:
 
       - name: Commit seen_jobs.txt
         run: |
-          git config --global user.name 'Job-Bot'
-          git config --global user.email 'bot@github.com'
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
           git add seen_jobs.txt
           git commit -m "Update seen jobs" || echo "No changes to commit"
           git push
