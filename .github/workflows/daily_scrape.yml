@@ -1,0 +1,42 @@
+name: Daily Job Scrape
+
+on:
+  schedule:
+    # This runs at 09:00 UTC, which is 11:00 AM in Germany (CEST)
+    - cron: '0 9 * * *'
+  workflow_dispatch: # Allows you to run it manually from GitHub
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Install Chrome for Selenium
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y google-chrome-stable
+
+      - name: Run Scraper
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+        run: python sap_scraper.py
+
+      - name: Commit seen_jobs.txt
+        run: |
+          git config --global user.name 'Job-Bot'
+          git config --global user.email 'bot@github.com'
+          git add seen_jobs.txt
+          git commit -m "Update seen jobs" || echo "No changes to commit"
+          git push
