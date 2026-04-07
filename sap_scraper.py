@@ -18,7 +18,8 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
 if not TELEGRAM_TOKEN or not CHAT_ID:
-    raise ValueError("Missing Telegram secrets. Check your .env file.")
+    # On GitHub, this will crash if Secrets aren't set correctly
+    raise ValueError("Missing Telegram secrets. Check GitHub Secrets or .env file.")
 
 SEEN_FILE = "seen_jobs.txt"
 
@@ -86,232 +87,110 @@ return getAllLinks(document).map(a => { return {text: a.innerText || a.textConte
 
 # --- HELPER FUNCTIONS ---
 def send_telegram_alert(message, reply_to=None):
-    """Fires a message to Telegram and returns the message ID for threading."""
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": CHAT_ID, 
-        "text": message, 
-        "parse_mode": "HTML", 
-        "disable_web_page_preview": True
-    }
-    
-    # If a previous message ID is provided, reply to it to create a thread
-    if reply_to:
-        payload["reply_to_message_id"] = reply_to
-        
+    payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML", "disable_web_page_preview": True}
+    if reply_to: payload["reply_to_message_id"] = reply_to
     try:
         response = requests.post(url, json=payload).json()
-        if response.get("ok"):
-            return response["result"]["message_id"]
-        else:
-            print(f"Telegram API Error: {response}")
-            return None
-    except Exception as e:
-        print(f"Failed to send Telegram message: {e}")
-        return None
+        return response["result"]["message_id"] if response.get("ok") else None
+    except Exception: return None
 
 def get_previously_seen_jobs():
-    if not os.path.exists(SEEN_FILE):
-        return set()
-    with open(SEEN_FILE, "r") as file:
-        return set(file.read().splitlines())
+    if not os.path.exists(SEEN_FILE): return set()
+    with open(SEEN_FILE, "r") as file: return set(file.read().splitlines())
 
 def save_new_jobs(new_links):
     with open(SEEN_FILE, "a") as file:
-        for link in new_links:
-            file.write(link + "\n")
+        for link in new_links: file.write(link + "\n")
 
 def calculate_priority(company, title):
     score = 0
     t_low = title.lower()
     c_low = company.lower()
-    
     if any(word in t_low for word in BLACKLIST): return -100 
     if any(top.lower() in c_low for top in TOP_COMPANIES): score += 30 
-    
     for tech in TECH_STACK:
         if tech in t_low: score += 10 
-        
-    if any(word in t_low for word in ["data science", "machine learning", "analytics", "ai", "llm", "engineer", "dataops"]):
+    if any(word in t_low for word in ["data science", "machine learning", "analytics", "ai", "llm", "engineer"]):
         score += 15
-        
     return score
 
 def dork_for_ats_link(company, title):
-    ats_domains = [
-        "site:myworkdayjobs.com", "site:personio.de", "site:personio.com", 
-        "site:join.com", "site:ashbyhq.com", "site:smartrecruiters.com", 
-        "site:softgarden.io", "site:greenhouse.io", "site:lever.co"
-    ]
-    
-    ats_footprints = " OR ".join(ats_domains)
-    query = f'{company} {title} "English" ({ats_footprints})'
-    
+    ats_domains = ["site:myworkdayjobs.com", "site:personio.de", "site:personio.com", "site:join.com", "site:smartrecruiters.com"]
+    query = f'{company} {title} "English" ({" OR ".join(ats_domains)})'
     try:
         with DDGS() as ddgs:
             results = list(ddgs.text(query, max_results=3))
             for res in results:
-                href = res.get('href', '').lower()
-                clean_c = company.lower().split()[0]
-                
-                if any(ats.replace("site:", "") in href for ats in ats_domains):
-                    if clean_c in href.replace("-", "").replace("_", ""):
-                        return res.get('href')
-                        
-        time.sleep(random.uniform(2.5, 4.5))
-    except Exception as e:
-        pass
+                if any(ats.replace("site:", "") in res.get('href', '').lower() for ats in ats_domains):
+                    return res.get('href')
+        time.sleep(random.uniform(2, 4))
+    except Exception: pass
     return None
 
 # --- MAIN EXECUTION ---
 def scrape_all():
     options = Options()
     
-    # ---> COMMENTED OUT FOR LOCAL VISUAL TESTING <---
-    # options.add_argument('--headless')
-    # options.add_argument('--disable-gpu')
-    
+    # --- AUTOMATIC CLOUD FIX FOR GITHUB ACTIONS ---
+    if os.getenv('GITHUB_ACTIONS') == 'true':
+        print("DETECTED: GitHub Cloud Runner. Applying Sandbox fixes...")
+        options.add_argument('--headless')
+        options.add_argument('--no-sandbox')
+        options.add_argument('--disable-dev-shm-usage')
+        options.add_argument('--disable-gpu')
+    else:
+        print("DETECTED: Local MacBook. Skipping Sandbox fixes...")
+        # options.add_argument('--headless') # Uncomment for invisible local run
+        pass
+
     options.add_argument('--window-size=1920,1080')
-    options.add_argument('user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36')
+    options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
     
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
     
     previously_seen = get_previously_seen_jobs()
     new_links_to_save = []
-    job_payloads = [] # Stores dicts with {score, company, title, link, source}
+    job_payloads = []
     
-    print("Initiating Unified Master Scraper Sequence...")
+    print("Initiating Scraper Sequence...")
     
-    # 1. SCRAPE THE DAX 40 DIRECT PORTALS
-    for company, urls in COMPANY_URLS.items():
-        print(f"Infiltrating Direct Portal: {company}...")
+    # [SCALED BACK FOR STABILITY TEST]
+    for company, urls in list(COMPANY_URLS.items()):
+        print(f"Checking {company}...")
         for url in urls:
             try:
                 driver.get(url)
-                time.sleep(8) # 8 seconds for heavy enterprise JS rendering
-                
+                time.sleep(8)
                 all_links = driver.execute_script(SHADOW_JS)
-                
                 for link_data in all_links:
                     text = str(link_data.get('text', '')).strip().replace('\n', ' ')
                     href = str(link_data.get('href', '')).strip()
-                    
-                    if not href or href.startswith('javascript:') or href in previously_seen or href in new_links_to_save:
-                        continue
-                        
-                    title_lower = text.lower()
+                    if not href or href in previously_seen or href in new_links_to_save: continue
                     score = calculate_priority(company, text)
-                    
-                    is_student = any(word in title_lower for word in ["student", "intern", "werkstudent", "thesis", "praktikum"])
-                    
-                    if is_student and len(text) > 8 and score > 0:
+                    if score > 0 and any(w in text.lower() for w in ["student", "intern", "werkstudent"]):
                         new_links_to_save.append(href)
                         job_payloads.append({"score": score, "company": company, "title": text, "link": href, "source": "Direct"})
-                        
-            except Exception as e:
-                print(f"Warning: {company} defenses held up. Moving on.")
-                continue 
-
-    # 2. SCRAPE JOB BOARDS (Last 24 Hours Only)
-    board_sources = [
-        {
-            "name": "LinkedIn",
-            "url": 'https://www.linkedin.com/jobs/search/?keywords=("working student" OR "Werkstudent" OR "intern") AND ("data science" OR "AI" OR "machine learning")&location=Germany&f_TPR=r86400&sortBy=DD',
-            "card_tag": "div", "card_class": "base-search-card__info",
-            "title_tag": "h3", "company_tag": "h4"
-        },
-        {
-            "name": "StepStone",
-            "url": 'https://www.stepstone.de/jobs/working-student-data-science?it=1',
-            "card_tag": "article"
-        }
-    ]
-
-    for source in board_sources:
-        print(f"Infiltrating Board: {source['name']}...")
-        try:
-            driver.get(source['url'])
-            time.sleep(5)
-            
-            # Scroll to load lazy items
-            for _ in range(3):
-                driver.find_element(By.TAG_NAME, 'body').send_keys('\ue010') # Page Down key
-                time.sleep(2)
-                
-            soup = BeautifulSoup(driver.page_source, 'html.parser')
-            
-            if source['name'] == "StepStone":
-                cards = soup.find_all(source['card_tag'], attrs={"data-at": "job-item"})
-            else:
-                cards = soup.find_all(source['card_tag'], class_=source['card_class'])
-            
-            for card in cards:
-                try:
-                    title = card.find(source['title_tag']).text.strip() if source['name'] == 'LinkedIn' else card.find('h2').text.strip()
-                    
-                    company_elem = card.find('span', attrs={"data-at": "job-item-company-name"}) if source['name'] == "StepStone" else card.find(source['company_tag'])
-                    company = company_elem.text.strip() if company_elem else "Unknown"
-                    
-                    # We need the href from the card. Stepstone keeps it in the article tag or an anchor inside.
-                    a_tag = card.find('a')
-                    href = a_tag['href'] if a_tag else ""
-                    
-                    # Fix relative links
-                    if href.startswith('/'):
-                        href = "https://www.stepstone.de" + href if source['name'] == "StepStone" else href
-                    
-                    if not href or href in previously_seen or href in new_links_to_save:
-                        continue
-                        
-                    if any(role in title.lower() for role in ["working student", "werkstudent", "intern"]):
-                        score = calculate_priority(company, title)
-                        if score > 15: # Stricter threshold for job boards to kill noise
-                            
-                            print(f"High value target found on {source['name']}: {company}. Hunting ATS link...")
-                            ats_link = dork_for_ats_link(company, title)
-                            final_link = ats_link if ats_link else href
-                            
-                            new_links_to_save.append(href) # Save original to prevent re-scraping
-                            job_payloads.append({"score": score, "company": company, "title": title, "link": final_link, "source": source['name']})
-                except Exception:
-                    continue
-                    
-        except Exception as e:
-            print(f"Skipping {source['name']} due to error.")
+            except Exception: continue
 
     driver.quit()
     
-    # 3. SORT AND DISPATCH (WITH THREADED CHUNKING)
     if job_payloads:
-        # Sort by score descending
         job_payloads.sort(key=lambda x: x['score'], reverse=True)
-        
-        MAX_LEN = 3900 # Safe buffer below Telegram's 4096 limit
-        current_chunk = "🚨 <b>Elite Data/AI Roles Detected (Last 24h):</b>\n\n"
-        last_message_id = None
-        
+        current_chunk = "🚨 <b>Elite Roles Detected:</b>\n\n"
+        last_id = None
         for job in job_payloads:
-            fire = "🔥" if job['score'] >= 45 else "⭐"
-            src_tag = f"[{job['source']}]" if job['source'] != "Direct" else "[DAX40]"
-            
-            line = f"{fire} <b>{job['company']}</b> [Score: {job['score']}]\n{src_tag} <a href='{job['link']}'>{job['title']}</a>\n\n"
-            
-            # If adding this job pushes us over the limit, send the current chunk now
-            if len(current_chunk) + len(line) > MAX_LEN:
-                last_message_id = send_telegram_alert(current_chunk, reply_to=last_message_id)
-                current_chunk = line # Start the next chunk with the current job
-                time.sleep(1.5) # Be nice to Telegram's rate limits
-            else:
-                current_chunk += line
-                
-        # Send whatever jobs are left in the final chunk
-        if current_chunk.strip():
-            send_telegram_alert(current_chunk, reply_to=last_message_id)
-            
+            line = f"⭐ <b>{job['company']}</b> [Score: {job['score']}]\n<a href='{job['link']}'>{job['title']}</a>\n\n"
+            if len(current_chunk) + len(line) > 3900:
+                last_id = send_telegram_alert(current_chunk, reply_to=last_id)
+                current_chunk = line
+                time.sleep(1)
+            else: current_chunk += line
+        send_telegram_alert(current_chunk, reply_to=last_id)
         save_new_jobs(new_links_to_save)
-        print(f"Success. Pushed {len(job_payloads)} elite jobs to Telegram across a threaded message.")
+        print(f"Sent {len(job_payloads)} jobs.")
     else:
-        print("No new high-priority roles today.")
+        print("No new jobs.")
 
 if __name__ == "__main__":
     scrape_all()
