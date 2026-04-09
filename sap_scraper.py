@@ -10,7 +10,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from webdriver_manager.chrome import ChromeDriverManager
-from ddgs import DDGS # Reverted to standard import
+from ddgs import DDGS
 
 # --- SECURE CLOUD CONFIGURATION ---
 load_dotenv()
@@ -44,8 +44,6 @@ TECH_STACK = [
     "fastapi", "react", "typescript", "pandas", "numpy"
 ]
 
-# Strict German words that indicate the job description is likely in German
-# (Note: 'werkstudent' is allowed as it is universally used for English roles too)
 GERMAN_WORDS = [
     " und ", " für ", " im ", " bereich ", " praktikant", " praktikum", 
     " entwickler", " datenanalyst", " wissenschaftlicher", " mitarbeiter", 
@@ -100,7 +98,6 @@ def save_new_jobs(new_links):
         for link in new_links: file.write(link + "\n")
 
 def is_english_role(title):
-    """Drops jobs that have strict German grammar or titles."""
     t_low = title.lower()
     if any(word in t_low for word in GERMAN_WORDS):
         return False
@@ -119,7 +116,6 @@ def calculate_priority(company, title):
     return score
 
 def verify_company_legitimacy(company_name):
-    """Network-free heuristic scam check."""
     c_low = company_name.lower()
     if any(top.lower() in c_low for top in TOP_COMPANIES): return True
     scam_flags = ["confidential", "stealth", "unknown", "test company", "hiring agency", "dummy"]
@@ -127,7 +123,6 @@ def verify_company_legitimacy(company_name):
     return True
 
 def scrape_wellfound_remote(previously_seen):
-    """Dorks Wellfound for English remote roles."""
     print("\n--- Infiltrating Wellfound ---")
     wellfound_jobs = []
     query = 'site:wellfound.com/jobs "Data Science" "English" "Remote" ("Intern" OR "Working Student")'
@@ -146,12 +141,16 @@ def scrape_wellfound_remote(previously_seen):
                             "link": href, "source": "Wellfound", "location": "Remote (Global/EU)"
                         })
         time.sleep(2)
-    except Exception as e: pass
+    except Exception as e: 
+        print(f"Wellfound Dork failed: {e}")
     return wellfound_jobs
 
 # --- MAIN EXECUTION ---
 def scrape_all():
     options = Options()
+    
+    # 1. THE EAGER FIX: Tell Chrome to drop heavy tracking pixels and ads
+    options.page_load_strategy = 'eager' 
     
     if os.getenv('GITHUB_ACTIONS') == 'true':
         print("DETECTED: GitHub Cloud Runner. Applying Sandbox fixes...")
@@ -159,11 +158,19 @@ def scrape_all():
         options.add_argument('--no-sandbox')
         options.add_argument('--disable-dev-shm-usage')
         options.add_argument('--disable-gpu')
-    
+        
+    # Stop Chrome from downloading images and stylesheets to speed up loading
+    prefs = {"profile.managed_default_content_settings.images": 2,
+             "profile.managed_default_content_settings.stylesheet": 2}
+    options.add_experimental_option("prefs", prefs)
+
     options.add_argument('--window-size=1920,1080')
     options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
     
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+    
+    # 2. THE TIMEOUT FIX: Never wait more than 30 seconds for a single page
+    driver.set_page_load_timeout(30)
     
     previously_seen = get_previously_seen_jobs()
     new_links_to_save = []
@@ -179,14 +186,14 @@ def scrape_all():
         for url in urls:
             try:
                 driver.get(url)
-                time.sleep(6)
+                time.sleep(4) # Reduced sleep for faster execution
                 all_links = driver.execute_script(SHADOW_JS)
                 for link_data in all_links:
                     text = str(link_data.get('text', '')).strip().replace('\n', ' ')
                     href = str(link_data.get('href', '')).strip()
                     
                     if not href or href in previously_seen or href in new_links_to_save: continue
-                    if not is_english_role(text): continue # Language check
+                    if not is_english_role(text): continue 
                     
                     score = calculate_priority(company, text)
                     if score > 0 and any(w in text.lower() for w in ["student", "intern", "werkstudent"]):
@@ -195,7 +202,9 @@ def scrape_all():
                             "score": score, "company": company, "title": text, 
                             "link": href, "source": "Direct", "location": "Germany (Hybrid/On-site)"
                         })
-            except Exception: continue
+            except Exception as e: 
+                print(f"Timeout/Error checking {company}: {e}")
+                continue
 
     # 2. SCRAPE REMOTE JOB BOARDS
     board_sources = [
@@ -215,8 +224,11 @@ def scrape_all():
     for source in board_sources:
         print(f"\n--- Infiltrating {source['name']} ---")
         try:
+            print("Loading URL...")
             driver.get(source['url'])
             time.sleep(5)
+            
+            print("Scrolling page to load lazy elements...")
             for _ in range(2):
                 driver.find_element(By.TAG_NAME, 'body').send_keys('\ue010')
                 time.sleep(1)
@@ -224,17 +236,18 @@ def scrape_all():
             soup = BeautifulSoup(driver.page_source, 'html.parser')
             cards = soup.find_all(source['card_tag'], attrs={"data-at": "job-item"}) if "StepStone" in source['name'] else soup.find_all(source['card_tag'], class_=source['card_class'])
             
+            print(f"RAW CARDS FOUND: {len(cards)}")
+            
             for card in cards:
                 try:
                     title = card.find(source['title_tag']).text.strip() if "LinkedIn" in source['name'] else card.find('h2').text.strip()
                     
                     if not is_english_role(title): 
-                        continue # Language check
+                        continue
                     
                     company_elem = card.find('span', attrs={"data-at": "job-item-company-name"}) if "StepStone" in source['name'] else card.find(source['company_tag'])
                     company = company_elem.text.strip() if company_elem else "Unknown"
                     
-                    # Extract Location
                     if "LinkedIn" in source['name']:
                         loc_elem = card.find(source['loc_tag'], class_=source['loc_class'])
                     else:
@@ -250,13 +263,16 @@ def scrape_all():
                     
                     score = calculate_priority(company, title)
                     if score > 10 and verify_company_legitimacy(company):
+                        print(f"✅ Added Remote: {company} - {title}")
                         new_links_to_save.append(href)
                         remote_payloads.append({
                             "score": score, "company": company, "title": title, 
                             "link": href, "source": source['name'], "location": location
                         })
-                except Exception: pass
-        except Exception: pass
+                except Exception as inner_e: 
+                    print(f"⚠️ Error parsing a specific job card: {inner_e}")
+        except Exception as e: 
+            print(f"❌ CRASH in {source['name']}: {e}")
 
     driver.quit()
 
@@ -264,6 +280,7 @@ def scrape_all():
     wellfound_results = scrape_wellfound_remote(previously_seen)
     for job in wellfound_results:
         if verify_company_legitimacy(job['company']):
+            print(f"✅ Added Remote: {job['company']} - {job['title']}")
             remote_payloads.append(job)
             new_links_to_save.append(job['link'])
 
@@ -286,6 +303,7 @@ def scrape_all():
                 time.sleep(1)
             else: current_chunk += line
         send_telegram_alert(current_chunk, reply_to=last_id)
+        print(f"Sent {len(dax_payloads)} DAX 40 jobs.")
 
     # Dispatch Remote Jobs
     if remote_payloads:
@@ -304,6 +322,7 @@ def scrape_all():
                 time.sleep(1)
             else: current_chunk += line
         send_telegram_alert(current_chunk, reply_to=last_id)
+        print(f"Sent {len(remote_payloads)} Remote jobs.")
 
     if not dax_payloads and not remote_payloads:
         print("No new jobs.")
