@@ -10,7 +10,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from webdriver_manager.chrome import ChromeDriverManager
-from duckduckgo_search import DDGS # Reverted to standard import
+from ddgs import DDGS # Reverted to standard import
 
 # --- SECURE CLOUD CONFIGURATION ---
 load_dotenv()
